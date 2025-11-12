@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { WorkingDaysParams, ApiResponse } from '../interfaces';
+import { WorkingDaysParams } from '../interfaces';
 import moment from 'moment';
 import 'moment-timezone';
+import { WorkingDaysResponse } from 'src/interfaces';
 
 @Injectable()
 export class WorkingDaysService {
@@ -75,7 +76,7 @@ export class WorkingDaysService {
     return date;
   }
 
-  addWorkingDaysAndHours(params: WorkingDaysParams): WorkingDaysParams {
+  addWorkingDaysAndHours(params: WorkingDaysParams): WorkingDaysResponse {
     const { days, hours, date } = params;
 
     if (!days && !hours) {
