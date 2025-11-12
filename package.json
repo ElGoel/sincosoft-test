@@ -25,7 +25,6 @@
     "@nestjs/platform-express": "^11.0.1",
     "axios": "^1.13.2",
     "luxon": "^3.7.2",
-    "moment": "^2.30.1",
     "moment-timezone": "^0.6.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { DateTime } from 'luxon';
 import axios from 'axios';
+
 @Injectable()
 export class WorkingDaysService {
   private readonly WORK_START = 8;
@@ -54,17 +55,72 @@ export class WorkingDaysService {
   }
 
   private isWeekend(date: DateTime): boolean {
-    const day = date.weekday; // 1=Monday, 7=Sunday
-    return day === 6 || day === 7;
+    return date.weekday === 6 || date.weekday === 7;
   }
 
   private isWorkingHour(date: DateTime): boolean {
-    const hour = date.hour;
+    const h = date.hour;
+
+    if (h < this.WORK_START) return false;
+
+    if (h >= this.WORK_END) return false;
+
+    if (h >= this.WORK_LUNCH_START && h < this.WORK_LUNCH_END) return false;
+
+    return true;
+  }
+
+  private isWorking(date: DateTime): boolean {
     return (
-      hour >= this.WORK_START &&
-      hour < this.WORK_END &&
-      !(hour >= this.WORK_LUNCH_START && hour < this.WORK_LUNCH_END)
+      this.isWorkingHour(date) && !this.isWeekend(date) && !this.isHoliday(date)
     );
+  }
+
+  private moveToPrevWorkTime(date: DateTime): DateTime {
+    let adjusted = date;
+
+    if (this.isWorking(adjusted)) {
+      return adjusted;
+    }
+
+    adjusted = adjusted.minus({ milliseconds: 1 });
+
+    while (this.isWeekend(adjusted) || this.isHoliday(adjusted)) {
+      adjusted = adjusted.minus({ days: 1 }).set({
+        hour: this.WORK_END - 1, // 16
+        minute: 59,
+        second: 59,
+      });
+    }
+
+    if (adjusted.hour >= this.WORK_END) {
+      adjusted = adjusted.set({
+        hour: this.WORK_END - 1, // 16
+        minute: 59,
+        second: 59,
+      });
+    }
+
+    if (adjusted.hour < this.WORK_START) {
+      adjusted = adjusted.minus({ days: 1 }).set({
+        hour: this.WORK_END - 1, // 16
+        minute: 59,
+        second: 59,
+      });
+    }
+
+    if (
+      adjusted.hour >= this.WORK_LUNCH_START &&
+      adjusted.hour < this.WORK_LUNCH_END
+    ) {
+      adjusted = adjusted.set({
+        hour: this.WORK_LUNCH_START - 1, // 11
+        minute: 59,
+        second: 59,
+      });
+    }
+
+    return adjusted;
   }
 
   private moveToNextWorkTime(date: DateTime): DateTime {
@@ -81,9 +137,13 @@ export class WorkingDaysService {
         .plus({ days: 1 })
         .set({ hour: this.WORK_START, minute: 0, second: 0 });
       return this.moveToNextWorkTime(adjusted);
-    } else if (adjusted.hour < this.WORK_START) {
+    }
+
+    if (adjusted.hour < this.WORK_START) {
       adjusted = adjusted.set({ hour: this.WORK_START, minute: 0, second: 0 });
-    } else if (
+    }
+
+    if (
       adjusted.hour >= this.WORK_LUNCH_START &&
       adjusted.hour < this.WORK_LUNCH_END
     ) {
@@ -97,7 +157,16 @@ export class WorkingDaysService {
     return adjusted;
   }
 
-  private addWorkingDays(date: DateTime, days: number): DateTime {
+  private addWorkingDays(
+    date: DateTime,
+    days: number,
+    timeToPreserve: {
+      hour: number;
+      minute: number;
+      second: number;
+      millisecond: number;
+    },
+  ): DateTime {
     let current = date;
     let added = 0;
 
@@ -108,50 +177,52 @@ export class WorkingDaysService {
       }
     }
 
-    return current;
+    while (this.isWeekend(current) || this.isHoliday(current)) {
+      current = current.plus({ days: 1 });
+    }
+
+    return current.set(timeToPreserve);
   }
 
   private addWorkingHours(date: DateTime, hours: number): DateTime {
     let current = date;
+    let remainingHours = hours;
 
-    while (hours > 0) {
+    while (remainingHours > 0) {
       if (!this.isWorkingHour(current)) {
         current = this.moveToNextWorkTime(current);
         continue;
       }
 
-      const endOfWork = current.set({
-        hour: this.WORK_END,
-        minute: 0,
-        second: 0,
-      });
-
       if (current.hour < this.WORK_LUNCH_START) {
-        const untilLunch = this.WORK_LUNCH_START - current.hour;
-        if (hours < untilLunch) {
-          return current.plus({ hours });
-        } else {
-          current = current.plus({ hours: untilLunch });
-          hours -= untilLunch;
-          current = current.set({
-            hour: this.WORK_LUNCH_END,
-            minute: 0,
-            second: 0,
-          });
-          continue;
+        const hoursUntilLunch =
+          this.WORK_LUNCH_START - current.hour - current.minute / 60;
+
+        if (remainingHours <= hoursUntilLunch) {
+          return current.plus({ minutes: remainingHours * 60 });
         }
+
+        remainingHours -= hoursUntilLunch;
+        current = current.set({
+          hour: this.WORK_LUNCH_END,
+          minute: 0,
+          second: 0,
+        });
+        continue;
       }
 
-      const remainingToday = endOfWork.diff(current, 'hours').hours;
-      if (hours < remainingToday) {
-        return current.plus({ hours });
-      } else {
-        hours -= remainingToday;
-        current = current
-          .plus({ days: 1 })
-          .set({ hour: this.WORK_START, minute: 0, second: 0 });
-        current = this.moveToNextWorkTime(current);
+      const hoursUntilEndOfDay =
+        this.WORK_END - current.hour - current.minute / 60;
+
+      if (remainingHours <= hoursUntilEndOfDay) {
+        return current.plus({ minutes: remainingHours * 60 });
       }
+
+      remainingHours -= hoursUntilEndOfDay;
+      current = current
+        .plus({ days: 1 })
+        .set({ hour: this.WORK_START, minute: 0, second: 0 });
+      current = this.moveToNextWorkTime(current);
     }
 
     return current;
@@ -171,20 +242,34 @@ export class WorkingDaysService {
 
     await this.initHolidays();
 
-    let base = date
+    const base = date
       ? DateTime.fromISO(date, { zone: 'utc' }).setZone(this.TIMEZONE)
       : DateTime.now().setZone(this.TIMEZONE);
 
-    base = this.moveToNextWorkTime(base);
+    const originalTime = {
+      hour: base.hour,
+      minute: 0,
+      second: 0,
+      millisecond: 0,
+    };
 
-    if (days) base = this.addWorkingDays(base, days);
-    if (hours) base = this.addWorkingHours(base, hours);
+    let calculateDate: DateTime;
+    if (hours && !days) {
+      calculateDate = this.moveToNextWorkTime(base);
+      calculateDate = this.addWorkingHours(calculateDate, hours);
+    } else if (days) {
+      calculateDate = this.moveToPrevWorkTime(base);
+      calculateDate = this.addWorkingDays(calculateDate, days, originalTime);
 
-    const result = base.setZone('utc').toISO({ suppressMilliseconds: true });
-
-    if (!result) {
-      throw new BadRequestException('Invalid date result');
+      if (hours) {
+        calculateDate = this.addWorkingHours(calculateDate, hours);
+      }
+    } else {
+      calculateDate = base;
     }
+
+    const result = calculateDate.toUTC().toISO({ suppressMilliseconds: true });
+    if (!result) throw new BadRequestException('Invalid date result');
 
     return { date: result };
   }
