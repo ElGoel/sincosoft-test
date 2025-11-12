@@ -7,7 +7,7 @@ import { WorkingDaysResponse } from 'src/interfaces';
 @Injectable()
 export class WorkingDaysService {
   private readonly TIMEZONE = 'America/Bogota';
-  private readonly WOEKING_HOURS_START = 8;
+  private readonly WORKING_HOURS_START = 8;
   private readonly WORKING_LUNCH_START = 12;
   private readonly WORKING_LUNCH_END = 13;
   private readonly WORKING_HOURS_END = 17;
@@ -41,38 +41,46 @@ export class WorkingDaysService {
     return day === 0 || day === 6;
   }
 
-  private isWorkingTime(date: moment.Moment): boolean {
-    const hour = date.hour();
-    return (
-      hour >= this.WOEKING_HOURS_START &&
-      hour < this.WORKING_HOURS_END &&
-      !(hour >= this.WORKING_LUNCH_START && this.WORKING_LUNCH_END)
-    );
+  private isWorkingDay(date: moment.Moment): boolean {
+    return !this.isWeekend(date) && !this.isHoliday(date);
   }
 
-  private moveToNextWorkingtime(date: moment.Moment): moment.Moment {
-    while (
-      this.isWeekend(date) ||
-      this.isHoliday(date) ||
-      this.isWorkingTime(date)
-    ) {
-      if (
-        date.hour() >= this.WORKING_HOURS_END ||
-        this.isWeekend(date) ||
-        this.isHoliday(date)
-      ) {
-        date.add(1, 'day').set({ hour: this.WOEKING_HOURS_START, minute: 0 });
-      } else if (
-        date.hour() >= this.WORKING_LUNCH_START &&
-        date.hour() < this.WORKING_LUNCH_END
-      ) {
-        date.set({ hour: this.WORKING_LUNCH_END, minute: 0 });
-      } else if (date.hour() < this.WOEKING_HOURS_START) {
-        date.set({ hour: this.WOEKING_HOURS_START, minute: 0 });
-      } else {
-        break;
-      }
+  private isWorkingTime(date: moment.Moment): boolean {
+    if (!this.isWorkingDay(date)) return false;
+
+    const hour = date.hour();
+
+    if (hour < this.WORKING_HOURS_START) return false;
+    if (hour >= this.WORKING_HOURS_END) return false;
+    if (hour >= this.WORKING_LUNCH_START && hour < this.WORKING_LUNCH_END)
+      return false;
+
+    return true;
+  }
+
+  private moveToNextWorkingTime(date: moment.Moment): moment.Moment {
+    while (!this.isWorkingDay(date)) {
+      date
+        .add(1, 'day')
+        .set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
     }
+
+    const hour = date.hour();
+
+    if (hour < this.WORKING_HOURS_START) {
+      date.set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
+    } else if (
+      hour >= this.WORKING_LUNCH_START &&
+      hour < this.WORKING_LUNCH_END
+    ) {
+      date.set({ hour: this.WORKING_LUNCH_END, minute: 0, second: 0 });
+    } else if (hour >= this.WORKING_HOURS_END) {
+      date
+        .add(1, 'day')
+        .set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
+      return this.moveToNextWorkingTime(date);
+    }
+
     return date;
   }
 
@@ -84,38 +92,86 @@ export class WorkingDaysService {
     }
 
     let current = date
-      ? moment.utc(date as string, this.TIMEZONE)
+      ? moment.tz(date as string, this.TIMEZONE)
       : moment.tz(this.TIMEZONE);
 
-    current = this.moveToNextWorkingtime(current);
+    const originalHour = current.hour();
+    const originalMinute = current.minute();
+
+    current = this.moveToNextWorkingTime(current.clone());
 
     if (days && days > 0) {
       let addedDays = 0;
       while (addedDays < days) {
         current.add(1, 'day');
-        if (!this.isWeekend(current) && !this.isHoliday(current)) {
+        if (this.isWorkingDay(current)) {
           addedDays++;
         }
       }
-      current.set({ hour: this.WOEKING_HOURS_START, minute: 0 });
+
+      if (hours) {
+        current.set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
+      } else {
+        let targetHour = originalHour;
+        let targetMinute = originalMinute;
+
+        if (originalHour < this.WORKING_HOURS_START) {
+          targetHour = this.WORKING_HOURS_START;
+          targetMinute = 0;
+        } else if (originalHour >= this.WORKING_HOURS_END) {
+          targetHour = this.WORKING_HOURS_END;
+          targetMinute = 0;
+        } else if (
+          originalHour >= this.WORKING_LUNCH_START &&
+          originalHour < this.WORKING_LUNCH_END
+        ) {
+          targetHour = this.WORKING_LUNCH_START;
+          targetMinute = 0;
+        }
+
+        current.set({ hour: targetHour, minute: targetMinute, second: 0 });
+      }
     }
 
     if (hours && hours > 0) {
-      let remainingHours = hours as number;
-      while (remainingHours > 0) {
-        if (this.isWorkingTime(current)) {
-          current.add(1, 'hour');
-          remainingHours--;
+      let remainingMinutes = hours * 60;
+
+      while (remainingMinutes > 0) {
+        if (!this.isWorkingTime(current)) {
+          current = this.moveToNextWorkingTime(current);
+          continue;
+        }
+
+        const currentHour = current.hour();
+        const currentMinute = current.minute();
+
+        let minutesUntilBreak;
+
+        if (currentHour < this.WORKING_LUNCH_START) {
+          minutesUntilBreak =
+            (this.WORKING_LUNCH_START - currentHour) * 60 - currentMinute;
+        } else if (
+          currentHour >= this.WORKING_LUNCH_END &&
+          currentHour < this.WORKING_HOURS_END
+        ) {
+          minutesUntilBreak =
+            (this.WORKING_HOURS_END - currentHour) * 60 - currentMinute;
         } else {
-          current = this.moveToNextWorkingtime(current);
+          current = this.moveToNextWorkingTime(current);
+          continue;
+        }
+
+        const minutesToAdd = Math.min(remainingMinutes, minutesUntilBreak);
+        current.add(minutesToAdd, 'minutes');
+        remainingMinutes -= minutesToAdd;
+
+        if (remainingMinutes > 0 && !this.isWorkingTime(current)) {
+          current = this.moveToNextWorkingTime(current);
         }
       }
     }
 
-    const resultUtc = current
-      .clone()
-      .tz('UTC')
-      .format('YYYY-MM-DDTHH:mm:ss[Z]');
+    const resultUtc = current.clone().utc().format('YYYY-MM-DDTHH:mm:ss[Z]');
     return { date: resultUtc };
   }
 }
