@@ -1,177 +1,191 @@
-import { Injectable } from '@nestjs/common';
-import { WorkingDaysParams } from '../interfaces';
-import moment from 'moment';
-import 'moment-timezone';
-import { WorkingDaysResponse } from 'src/interfaces';
-
+import {
+  WorkingDaysParams,
+  ApiResponse,
+  HolidayResponse,
+} from 'src/interfaces';
+import {
+  Injectable,
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { DateTime } from 'luxon';
+import axios from 'axios';
 @Injectable()
 export class WorkingDaysService {
+  private readonly WORK_START = 8;
+  private readonly WORK_LUNCH_START = 12;
+  private readonly WORK_LUNCH_END = 13;
+  private readonly WORK_END = 17;
   private readonly TIMEZONE = 'America/Bogota';
-  private readonly WORKING_HOURS_START = 8;
-  private readonly WORKING_LUNCH_START = 12;
-  private readonly WORKING_LUNCH_END = 13;
-  private readonly WORKING_HOURS_END = 17;
+  private holidays: Set<string> = new Set();
 
-  private readonly holidays: string[] = [
-    '2025-01-01',
-    '2025-01-06',
-    '2025-03-24',
-    '2025-04-17',
-    '2025-04-18',
-    '2025-05-01',
-    '2025-06-02',
-    '2025-06-23',
-    '2025-06-30',
-    '2025-07-20',
-    '2025-08-07',
-    '2025-08-18',
-    '2025-10-13',
-    '2025-11-03',
-    '2025-11-17',
-    '2025-12-08',
-    '2025-12-25',
-  ];
+  async initHolidays(): Promise<void> {
+    try {
+      const response = await axios.get<HolidayResponse | string[]>(
+        'https://content.capta.co/Recruitment/WorkingDays.json',
+      );
 
-  private isHoliday(date: moment.Moment): boolean {
-    return this.holidays.includes(date.format('YYYY-MM-DD'));
+      let holidayList: string[] = [];
+
+      if (Array.isArray(response.data)) {
+        holidayList = response.data;
+      } else if (
+        response.data &&
+        typeof response.data === 'object' &&
+        'holidays' in response.data
+      ) {
+        holidayList = response.data.holidays || [];
+      }
+
+      holidayList.forEach((d: string) => this.holidays.add(d));
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        throw new ServiceUnavailableException(
+          `Unable to fetch holidays: ${error.message}`,
+        );
+      }
+      throw new ServiceUnavailableException('Unable to fetch holidays');
+    }
   }
 
-  private isWeekend(date: moment.Moment): boolean {
-    const day = date.day();
-    return day === 0 || day === 6;
+  private isHoliday(date: DateTime): boolean {
+    const isoDate = date.toISODate();
+    return isoDate ? this.holidays.has(isoDate) : false;
   }
 
-  private isWorkingDay(date: moment.Moment): boolean {
-    return !this.isWeekend(date) && !this.isHoliday(date);
+  private isWeekend(date: DateTime): boolean {
+    const day = date.weekday; // 1=Monday, 7=Sunday
+    return day === 6 || day === 7;
   }
 
-  private isWorkingTime(date: moment.Moment): boolean {
-    if (!this.isWorkingDay(date)) return false;
-
-    const hour = date.hour();
-
-    if (hour < this.WORKING_HOURS_START) return false;
-    if (hour >= this.WORKING_HOURS_END) return false;
-    if (hour >= this.WORKING_LUNCH_START && hour < this.WORKING_LUNCH_END)
-      return false;
-
-    return true;
+  private isWorkingHour(date: DateTime): boolean {
+    const hour = date.hour;
+    return (
+      hour >= this.WORK_START &&
+      hour < this.WORK_END &&
+      !(hour >= this.WORK_LUNCH_START && hour < this.WORK_LUNCH_END)
+    );
   }
 
-  private moveToNextWorkingTime(date: moment.Moment): moment.Moment {
-    while (!this.isWorkingDay(date)) {
-      date
-        .add(1, 'day')
-        .set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
+  private moveToNextWorkTime(date: DateTime): DateTime {
+    let adjusted = date;
+
+    while (this.isWeekend(adjusted) || this.isHoliday(adjusted)) {
+      adjusted = adjusted
+        .plus({ days: 1 })
+        .set({ hour: this.WORK_START, minute: 0, second: 0 });
     }
 
-    const hour = date.hour();
-
-    if (hour < this.WORKING_HOURS_START) {
-      date.set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
+    if (adjusted.hour >= this.WORK_END) {
+      adjusted = adjusted
+        .plus({ days: 1 })
+        .set({ hour: this.WORK_START, minute: 0, second: 0 });
+      return this.moveToNextWorkTime(adjusted);
+    } else if (adjusted.hour < this.WORK_START) {
+      adjusted = adjusted.set({ hour: this.WORK_START, minute: 0, second: 0 });
     } else if (
-      hour >= this.WORKING_LUNCH_START &&
-      hour < this.WORKING_LUNCH_END
+      adjusted.hour >= this.WORK_LUNCH_START &&
+      adjusted.hour < this.WORK_LUNCH_END
     ) {
-      date.set({ hour: this.WORKING_LUNCH_END, minute: 0, second: 0 });
-    } else if (hour >= this.WORKING_HOURS_END) {
-      date
-        .add(1, 'day')
-        .set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
-      return this.moveToNextWorkingTime(date);
+      adjusted = adjusted.set({
+        hour: this.WORK_LUNCH_END,
+        minute: 0,
+        second: 0,
+      });
     }
 
-    return date;
+    return adjusted;
   }
 
-  addWorkingDaysAndHours(params: WorkingDaysParams): WorkingDaysResponse {
-    const { days, hours, date } = params;
+  private addWorkingDays(date: DateTime, days: number): DateTime {
+    let current = date;
+    let added = 0;
 
-    if (!days && !hours) {
-      throw new Error('InvalidParameters: You must provide days and/or hours');
-    }
-
-    let current = date
-      ? moment.tz(date as string, this.TIMEZONE)
-      : moment.tz(this.TIMEZONE);
-
-    const originalHour = current.hour();
-    const originalMinute = current.minute();
-
-    current = this.moveToNextWorkingTime(current.clone());
-
-    if (days && days > 0) {
-      let addedDays = 0;
-      while (addedDays < days) {
-        current.add(1, 'day');
-        if (this.isWorkingDay(current)) {
-          addedDays++;
-        }
-      }
-
-      if (hours) {
-        current.set({ hour: this.WORKING_HOURS_START, minute: 0, second: 0 });
-      } else {
-        let targetHour = originalHour;
-        let targetMinute = originalMinute;
-
-        if (originalHour < this.WORKING_HOURS_START) {
-          targetHour = this.WORKING_HOURS_START;
-          targetMinute = 0;
-        } else if (originalHour >= this.WORKING_HOURS_END) {
-          targetHour = this.WORKING_HOURS_END;
-          targetMinute = 0;
-        } else if (
-          originalHour >= this.WORKING_LUNCH_START &&
-          originalHour < this.WORKING_LUNCH_END
-        ) {
-          targetHour = this.WORKING_LUNCH_START;
-          targetMinute = 0;
-        }
-
-        current.set({ hour: targetHour, minute: targetMinute, second: 0 });
+    while (added < days) {
+      current = current.plus({ days: 1 });
+      if (!this.isWeekend(current) && !this.isHoliday(current)) {
+        added++;
       }
     }
 
-    if (hours && hours > 0) {
-      let remainingMinutes = hours * 60;
+    return current;
+  }
 
-      while (remainingMinutes > 0) {
-        if (!this.isWorkingTime(current)) {
-          current = this.moveToNextWorkingTime(current);
-          continue;
-        }
+  private addWorkingHours(date: DateTime, hours: number): DateTime {
+    let current = date;
 
-        const currentHour = current.hour();
-        const currentMinute = current.minute();
+    while (hours > 0) {
+      if (!this.isWorkingHour(current)) {
+        current = this.moveToNextWorkTime(current);
+        continue;
+      }
 
-        let minutesUntilBreak;
+      const endOfWork = current.set({
+        hour: this.WORK_END,
+        minute: 0,
+        second: 0,
+      });
 
-        if (currentHour < this.WORKING_LUNCH_START) {
-          minutesUntilBreak =
-            (this.WORKING_LUNCH_START - currentHour) * 60 - currentMinute;
-        } else if (
-          currentHour >= this.WORKING_LUNCH_END &&
-          currentHour < this.WORKING_HOURS_END
-        ) {
-          minutesUntilBreak =
-            (this.WORKING_HOURS_END - currentHour) * 60 - currentMinute;
+      if (current.hour < this.WORK_LUNCH_START) {
+        const untilLunch = this.WORK_LUNCH_START - current.hour;
+        if (hours < untilLunch) {
+          return current.plus({ hours });
         } else {
-          current = this.moveToNextWorkingTime(current);
+          current = current.plus({ hours: untilLunch });
+          hours -= untilLunch;
+          current = current.set({
+            hour: this.WORK_LUNCH_END,
+            minute: 0,
+            second: 0,
+          });
           continue;
         }
+      }
 
-        const minutesToAdd = Math.min(remainingMinutes, minutesUntilBreak);
-        current.add(minutesToAdd, 'minutes');
-        remainingMinutes -= minutesToAdd;
-
-        if (remainingMinutes > 0 && !this.isWorkingTime(current)) {
-          current = this.moveToNextWorkingTime(current);
-        }
+      const remainingToday = endOfWork.diff(current, 'hours').hours;
+      if (hours < remainingToday) {
+        return current.plus({ hours });
+      } else {
+        hours -= remainingToday;
+        current = current
+          .plus({ days: 1 })
+          .set({ hour: this.WORK_START, minute: 0, second: 0 });
+        current = this.moveToNextWorkTime(current);
       }
     }
 
-    const resultUtc = current.clone().utc().format('YYYY-MM-DDTHH:mm:ss[Z]');
-    return { date: resultUtc };
+    return current;
+  }
+
+  async calculate({
+    days,
+    hours,
+    date,
+  }: WorkingDaysParams): Promise<ApiResponse> {
+    if (!days && !hours) {
+      throw new BadRequestException({
+        error: 'InvalidParameters',
+        message: 'Debe proporcionar al menos uno: days o hours',
+      });
+    }
+
+    await this.initHolidays();
+
+    let base = date
+      ? DateTime.fromISO(date, { zone: 'utc' }).setZone(this.TIMEZONE)
+      : DateTime.now().setZone(this.TIMEZONE);
+
+    base = this.moveToNextWorkTime(base);
+
+    if (days) base = this.addWorkingDays(base, days);
+    if (hours) base = this.addWorkingHours(base, hours);
+
+    const result = base.setZone('utc').toISO({ suppressMilliseconds: true });
+
+    if (!result) {
+      throw new BadRequestException('Invalid date result');
+    }
+
+    return { date: result };
   }
 }

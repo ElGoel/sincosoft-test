@@ -4,11 +4,10 @@ export interface WorkingDaysParams {
   date?: string;
 }
 
-export interface WorkingDaysResponse {
+export interface ApiResponse {
   date: string;
 }
 
-export interface ErrorResponse {
-  error: string;
-  message: string;
+export interface HolidayResponse {
+  holidays?: string[];
 }
