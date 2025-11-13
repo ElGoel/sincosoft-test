@@ -70,62 +70,8 @@ export class WorkingDaysService {
     return true;
   }
 
-  private isWorking(date: DateTime): boolean {
-    return (
-      this.isWorkingHour(date) && !this.isWeekend(date) && !this.isHoliday(date)
-    );
-  }
-
-  private moveToPrevWorkTime(date: DateTime): DateTime {
-    let adjusted = date;
-
-    if (this.isWorking(adjusted)) {
-      return adjusted;
-    }
-
-    adjusted = adjusted.minus({ milliseconds: 1 });
-
-    while (this.isWeekend(adjusted) || this.isHoliday(adjusted)) {
-      adjusted = adjusted.minus({ days: 1 }).set({
-        hour: this.WORK_END - 1, // 16
-        minute: 59,
-        second: 59,
-      });
-    }
-
-    if (adjusted.hour >= this.WORK_END) {
-      adjusted = adjusted.set({
-        hour: this.WORK_END - 1, // 16
-        minute: 59,
-        second: 59,
-      });
-    }
-
-    if (adjusted.hour < this.WORK_START) {
-      adjusted = adjusted.minus({ days: 1 }).set({
-        hour: this.WORK_END - 1, // 16
-        minute: 59,
-        second: 59,
-      });
-    }
-
-    if (
-      adjusted.hour >= this.WORK_LUNCH_START &&
-      adjusted.hour < this.WORK_LUNCH_END
-    ) {
-      adjusted = adjusted.set({
-        hour: this.WORK_LUNCH_START - 1, // 11
-        minute: 59,
-        second: 59,
-      });
-    }
-
-    return adjusted;
-  }
-
   private moveToNextWorkTime(date: DateTime): DateTime {
     let adjusted = date;
-
     while (this.isWeekend(adjusted) || this.isHoliday(adjusted)) {
       adjusted = adjusted
         .plus({ days: 1 })
@@ -258,7 +204,7 @@ export class WorkingDaysService {
       calculateDate = this.moveToNextWorkTime(base);
       calculateDate = this.addWorkingHours(calculateDate, hours);
     } else if (days) {
-      calculateDate = this.moveToPrevWorkTime(base);
+      calculateDate = this.moveToNextWorkTime(base);
       calculateDate = this.addWorkingDays(calculateDate, days, originalTime);
 
       if (hours) {

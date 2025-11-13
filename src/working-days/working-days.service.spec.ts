@@ -15,13 +15,13 @@ describe('WorkingDaysService', () => {
   });
 
   it('adds 1 working hour from friday 5pm → monday 9am UTC', async () => {
-    const baseDate = '2025-08-01T22:00:00Z'; // viernes 5pm Colombia
+    const baseDate = '2025-08-01T22:00:00Z';
     const result = await service.calculate({ hours: 1, date: baseDate });
     expect(result.date).toBe('2025-08-04T14:00:00Z');
   });
 
   it('adds 1 working day from sunday 6pm → monday 5pm UTC', async () => {
-    const baseDate = '2025-08-03T23:00:00Z'; // domingo 6pm COL
+    const baseDate = '2025-08-03T23:00:00Z';
     const result = await service.calculate({ days: 1, date: baseDate });
     expect(result.date).toBe('2025-08-04T22:00:00Z');
   });
